@@ -59,7 +59,8 @@ vi.mock('@/background/activity-log', () => ({
   logError: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { TabManager } from '@/background/tab-manager';
+import { TabManager, WEBAUTHN_PIN_SCRIPT } from '@/background/tab-manager';
+import { runInNewContext } from 'node:vm';
 import { pageEvents } from '@/background/page-events';
 
 describe('TabManager CDP readiness', () => {
@@ -186,9 +187,11 @@ describe('TabManager CDP readiness', () => {
     expect(mockChrome.debugger.attach).toHaveBeenCalledWith({ tabId: 101 }, expect.any(String));
   });
 
-  it('turns WebAuthn into an immediate failure instead of the native security-key dialog', async () => {
+  it('installs the WebAuthn guard sequence so the native security-key dialog is not raised', async () => {
     // Regression: GitHub's 2FA page asked for a security key through Chrome's native dialog,
     // which the agent cannot answer and which hid the authenticator-app (1Password TOTP) path.
+    // This asserts the CDP command sequence only; browser-level outcomes (NotAllowedError timing,
+    // discoverable/conditional get, create with UV) need the Chrome QA harness, not this mock.
     const manager = new TabManager();
     mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
     mockChrome.debugger.attach.mockResolvedValue(undefined);
@@ -209,6 +212,95 @@ describe('TabManager CDP readiness', () => {
       options: expect.objectContaining({ hasUserVerification: true, isUserVerified: false, automaticPresenceSimulation: true }),
     });
     expect(webauthn[3][2]).toEqual({ authenticatorId: 'va-1', isBadUP: true });
+  });
+
+  it('pins navigator.credentials to Chrome in every document, once per session', async () => {
+    // Regression: 1Password replaces navigator.credentials in the page and keeps discoverable
+    // passkey requests (no allowCredentials) waiting on its unlock UI forever.
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
+    mockChrome.debugger.attach.mockResolvedValue(undefined);
+    let n = 0;
+    mockChrome.debugger.sendCommand.mockImplementation(async (_debuggee, method) => {
+      if (method === 'WebAuthn.addVirtualAuthenticator') return { authenticatorId: 'va-1' };
+      if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: `s${++n}` };
+      return {};
+    });
+
+    await manager.connectTab(101, 'https://example.com');
+    await manager.reattachDebugger();
+
+    const scripts = mockChrome.debugger.sendCommand.mock.calls
+      .filter(([, method]) => String(method).includes('ScriptToEvaluateOnNewDocument'))
+      .map(([, method, params]) => [method, params]);
+    expect(scripts).toEqual([
+      ['Page.addScriptToEvaluateOnNewDocument', { source: WEBAUTHN_PIN_SCRIPT, runImmediately: true }],
+      ['Page.removeScriptToEvaluateOnNewDocument', { identifier: 's1' }],
+      ['Page.addScriptToEvaluateOnNewDocument', { source: WEBAUTHN_PIN_SCRIPT, runImmediately: true }],
+    ]);
+  });
+
+  it('the pin script hands get/create back to the native implementation and keeps them there', () => {
+    class CredentialsContainer {
+      get() { return 'native-get'; }
+      create() { return 'native-create'; }
+    }
+    const credentials = new CredentialsContainer() as CredentialsContainer & Record<string, unknown>;
+    // What a password manager does in the page before (or after) we run.
+    credentials.get = () => 'hijacked';
+    const window = { CredentialsContainer, navigator: { credentials } } as Record<string, unknown>;
+    window.window = window;
+
+    runInNewContext(WEBAUTHN_PIN_SCRIPT, window);
+    credentials.create = () => 'hijacked';
+    runInNewContext(WEBAUTHN_PIN_SCRIPT, window); // second run in the same document: no-op
+
+    expect(credentials.get()).toBe('native-get');
+    expect(credentials.create()).toBe('native-create');
+  });
+
+  it('rolls a partial WebAuthn guard install back to the pre-attach state', async () => {
+    // Review blocker: if addVirtualAuthenticator or setResponseOverrideBits fails mid-install,
+    // the tab must not stay half-guarded (enabled without authenticator, or authenticator
+    // without the UP override). Each failing step must undo exactly what landed.
+    for (const failing of ['WebAuthn.addVirtualAuthenticator', 'WebAuthn.setResponseOverrideBits']) {
+      mockChrome.debugger.sendCommand.mockReset();
+      mockChrome.debugger.sendCommand.mockImplementation(async (_d, method) => {
+        if (method === failing) throw new Error(`simulated CDP failure in ${method}`);
+        if (method === 'WebAuthn.addVirtualAuthenticator') return { authenticatorId: 'va-1' };
+        return {};
+      });
+      const manager = new TabManager();
+      mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
+      mockChrome.debugger.attach.mockResolvedValue(undefined);
+
+      await manager.connectTab(101, 'https://example.com');
+
+      const calls = mockChrome.debugger.sendCommand.mock.calls
+        .map(([, method]) => String(method));
+      expect(calls).toContain('WebAuthn.disable'); // reverted to untouched domain
+      if (failing === 'WebAuthn.setResponseOverrideBits') {
+        expect(calls).toContain('WebAuthn.removeVirtualAuthenticator');
+      } else {
+        expect(calls).not.toContain('WebAuthn.removeVirtualAuthenticator');
+      }
+      expect(manager.getConnectedTabId()).toBe(101); // not fatal: the tab still connects
+    }
+  });
+
+  it('skips the WebAuthn guard when ajb.webauthnGuard is off, keeping native auth', async () => {
+    mockChrome.storage.local.get.mockResolvedValueOnce({ 'ajb.webauthnGuard': 'off' });
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
+    mockChrome.debugger.attach.mockResolvedValue(undefined);
+    mockChrome.debugger.sendCommand.mockResolvedValue({});
+
+    await manager.connectTab(101, 'https://example.com');
+
+    const webauthn = mockChrome.debugger.sendCommand.mock.calls
+      .filter(([, method]) => String(method).startsWith('WebAuthn.'));
+    expect(webauthn).toEqual([]);
+    expect(manager.getConnectedTabId()).toBe(101);
   });
 
   it('still connects when the WebAuthn domain is unavailable', async () => {
@@ -337,6 +429,35 @@ describe('TabManager background-tab control', () => {
       url: 'https://example.com',
       active: false,
     });
+  });
+
+  it('createTab attaches on a blank page before loading the URL it will drive', async () => {
+    // A password manager's page script (1Password) runs at document start; the WebAuthn guard
+    // only wins in documents created after we attach, so the URL must load after connectTab.
+    const manager = new TabManager();
+    const order: string[] = [];
+    let onUpdated: ((tabId: number, info: { status?: string }) => void) | undefined;
+    mockChrome.tabs.onUpdated.addListener.mockImplementation((fn) => { onUpdated = fn; });
+    mockChrome.tabs.create.mockImplementation(async (props) => {
+      order.push(`create ${props.url}`);
+      return { id: 7, url: props.url, title: '', active: false, status: 'complete' };
+    });
+    mockChrome.tabs.get.mockResolvedValue({ id: 7, url: 'https://example.com/', title: 'Example', active: false, status: 'complete' });
+    mockChrome.tabs.update.mockImplementation(async (_id, props) => {
+      order.push(`navigate ${props.url}`);
+      queueMicrotask(() => onUpdated?.(7, { status: 'complete' }));
+      return {};
+    });
+    mockChrome.debugger.attach.mockImplementation(async () => { order.push('attach'); });
+    mockChrome.debugger.sendCommand.mockImplementation(async (_debuggee, method) => {
+      if (method === 'Page.addScriptToEvaluateOnNewDocument') order.push('pin script');
+      return method === 'WebAuthn.addVirtualAuthenticator' ? { authenticatorId: 'va-1' } : { identifier: 's1' };
+    });
+
+    const info = await manager.createTab('https://example.com/');
+
+    expect(order).toEqual(['create about:blank', 'attach', 'pin script', 'navigate https://example.com/']);
+    expect(info).toMatchObject({ id: 7, url: 'https://example.com/', title: 'Example', connected: true });
   });
 
   it('createTab activates the tab only when asked', async () => {

@@ -9,6 +9,53 @@ import type { TabInfo } from '@/types/messages';
 import { DEBUGGER } from '@/constants';
 import { pageEvents } from './page-events';
 
+/**
+ * Runs in every document of a controlled tab (see installWebAuthnGuard). Pins
+ * navigator.credentials.get/create to CredentialsContainer.prototype — Chrome's own
+ * implementation, which a page-world override leaves untouched — so the call reaches the
+ * virtual authenticator. The PublicKeyCredential capability checks are pinned too while they
+ * are still native. Idempotent per document.
+ */
+export const WEBAUTHN_PIN_SCRIPT = `(() => {
+  const mark = Symbol.for('agent-jake.webauthn-pinned');
+  const creds = window.navigator && navigator.credentials;
+  const proto = window.CredentialsContainer && CredentialsContainer.prototype;
+  if (!creds || !proto || creds[mark]) return;
+  for (const name of ['get', 'create']) {
+    const native = proto[name];
+    try {
+      Object.defineProperty(creds, name, { configurable: false, enumerable: true, get: () => native, set: () => {} });
+    } catch (_) {}
+  }
+  const pkc = window.PublicKeyCredential;
+  if (pkc) for (const name of ['isUserVerifyingPlatformAuthenticatorAvailable', 'isConditionalMediationAvailable', 'getClientCapabilities']) {
+    const fn = pkc[name];
+    if (typeof fn === 'function' && /\\[native code\\]/.test(Function.prototype.toString.call(fn))) {
+      try { Object.defineProperty(pkc, name, { configurable: false, writable: false, value: fn }); } catch (_) {}
+    }
+  }
+  Object.defineProperty(creds, mark, { value: true });
+})();`;
+
+/**
+ * Kill switch for the WebAuthn guard. An `ajb.webauthnGuard` value in
+ * chrome.storage.local wins over the build-time VITE_WEBAUTHN_GUARD default
+ * (same precedence as config/runtime.ts). Anything other than 'off' keeps the
+ * guard on, so a missing or invalid value never silently disables it.
+   */
+export const WEBAUTHN_GUARD_STORAGE_KEY = 'ajb.webauthnGuard';
+
+export async function webAuthnGuardEnabled(): Promise<boolean> {
+  try {
+    const stored = await chrome.storage.local.get(WEBAUTHN_GUARD_STORAGE_KEY);
+    const value = stored[WEBAUTHN_GUARD_STORAGE_KEY];
+    if (value === 'off' || value === 'on') return value === 'on';
+  } catch (_) {
+    // Storage unreadable: fall back to the build default below.
+  }
+  return import.meta.env.VITE_WEBAUTHN_GUARD !== 'off';
+}
+
 export interface CdpStatus {
   connectedTabId: number | null;
   debuggerAttached: boolean;
@@ -26,6 +73,7 @@ export class TabManager {
   private pendingNewTab: TabInfo | null = null;
   private newTabListener: ((tab: chrome.tabs.Tab) => void) | null = null;
   private fileChooserInProgress = false;
+  private webauthnPinScript: { tabId: number; identifier: string } | null = null;
 
   /**
    * Initialize tab manager, restoring state from storage.
@@ -279,21 +327,39 @@ export class TabManager {
    * An agent cannot touch a security key, so a WebAuthn request (passkey, security-key 2FA)
    * must not raise Chrome's native "Use your security key" dialog: it covers the page, waits
    * for a hand nobody will lend and keeps the site from offering its other method — the
-   * authenticator-app code that browser_fill_secret types from 1Password.
+   * authenticator-app code the agent can type.
    *
-   * With the native UI off and one virtual authenticator that holds no credential, every
-   * navigator.credentials call fails at once with NotAllowedError and the site falls back.
-   * The authenticator verifies no user and its responses carry no user presence, so it cannot
-   * register a passkey either. It lives on the tab, across navigations, until we detach.
-   * Not fatal: without it only the native dialog comes back.
+   * Mechanism: native UI off plus one virtual authenticator that holds no credential, so
+   * navigator.credentials calls are answered by the virtual authenticator instead of the real
+   * one. Measured on the Pocharlies x86 Chrome (get with allowCredentials -> NotAllowedError in
+   * ~1-4 ms, no dialog; GitHub -> Google -> 2FA reaches the TOTP field). Browser-level
+   * behaviour for discoverable/conditional get, create with UV and real cancellation is NOT
+   * proven by these unit tests; it needs the Chrome QA harness requested in review.
+   *
+   * A password-manager extension (1Password Nightly) replaces navigator.credentials.get/create
+   * in the page and keeps for itself the requests that name no account: they wait on its own
+   * unlock UI forever and never reach the authenticator above. WEBAUTHN_PIN_SCRIPT hands those
+   * entry points back to Chrome's own implementation in every document of the tab, before the
+   * extension's content script runs, and in the document already loaded.
+   *
+   * Not fatal: any failure here reverts to the pre-install state, so only the native dialog
+   * comes back. Disable with ajb.webauthnGuard='off' in chrome.storage.local (or build-time
+   * VITE_WEBAUTHN_GUARD=off) to keep native authentication untouched.
    */
   private async installWebAuthnGuard(tabId: number): Promise<void> {
+    if (!(await webAuthnGuardEnabled())) {
+      log.info('WebAuthn guard disabled by configuration; native authentication kept.');
+      return;
+    }
     const target = { tabId };
+    let authenticatorId: string | null = null;
+    let enabled = false;
     try {
       // Dropping the previous session's authenticator keeps a re-attach at exactly one.
       await chrome.debugger.sendCommand(target, 'WebAuthn.disable').catch(() => undefined);
       await chrome.debugger.sendCommand(target, 'WebAuthn.enable', { enableUI: false });
-      const { authenticatorId } = await chrome.debugger.sendCommand(target, 'WebAuthn.addVirtualAuthenticator', {
+      enabled = true;
+      const added = await chrome.debugger.sendCommand(target, 'WebAuthn.addVirtualAuthenticator', {
         options: {
           protocol: 'ctap2',
           transport: 'usb',
@@ -303,8 +369,30 @@ export class TabManager {
           automaticPresenceSimulation: true,
         },
       }) as { authenticatorId: string };
+      authenticatorId = added.authenticatorId;
       await chrome.debugger.sendCommand(target, 'WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUP: true });
+
+      // One copy per session: a re-attach on the same session would otherwise stack them.
+      if (this.webauthnPinScript?.tabId === tabId) {
+        await chrome.debugger.sendCommand(target, 'Page.removeScriptToEvaluateOnNewDocument', {
+          identifier: this.webauthnPinScript.identifier,
+        }).catch(() => undefined);
+      }
+      const { identifier } = await chrome.debugger.sendCommand(target, 'Page.addScriptToEvaluateOnNewDocument', {
+        source: WEBAUTHN_PIN_SCRIPT,
+        runImmediately: true,
+      }) as { identifier: string };
+      this.webauthnPinScript = { tabId, identifier };
     } catch (error) {
+      // Partial install must not leave the tab half-guarded: undo exactly what landed, in
+      // reverse order, so the WebAuthn domain is as it was before we touched it.
+      if (authenticatorId) {
+        await chrome.debugger.sendCommand(target, 'WebAuthn.removeVirtualAuthenticator', { authenticatorId })
+          .catch(() => undefined);
+      }
+      if (enabled) {
+        await chrome.debugger.sendCommand(target, 'WebAuthn.disable').catch(() => undefined);
+      }
       log.warn('WebAuthn guard not installed, native security-key dialogs may appear:', error);
     }
   }
@@ -438,6 +526,7 @@ export class TabManager {
 
     // Always reset flag
     this.debuggerAttached = false;
+    this.webauthnPinScript = null; // the session's scripts go with it
 
     try {
       chrome.debugger.onEvent.removeListener(this.handleDebuggerEvent);
@@ -473,6 +562,7 @@ export class TabManager {
     this.cancelEventWaiters();
     pageEvents.reset();
     this.debuggerAttached = false;
+    this.webauthnPinScript = null;
     this.lastCdpError = 'CDP_DEBUGGER_DETACHED: Debugger detached unexpectedly';
   }
 
@@ -592,21 +682,55 @@ export class TabManager {
    * view. Pass `active: true` only when the user is meant to see it.
    */
   async createTab(url: string, connect = true, active = false): Promise<TabInfo> {
-    const tab = await chrome.tabs.create({ url, active });
+    // The WebAuthn guard's page script only beats a password manager's content script in
+    // documents created after we attach (see installWebAuthnGuard). So a tab we are going to
+    // drive opens blank, we attach, and only then does it load the URL.
+    const guardFirst = connect && /^https?:/i.test(url);
+    const tab = await chrome.tabs.create({ url: guardFirst ? 'about:blank' : url, active });
 
     if (connect && tab.id) {
-      // Wait for tab to finish loading
-      await this.waitForTabLoad(tab.id);
-      await this.connectTab(tab.id);
+      if (guardFirst) {
+        await this.whenTabComplete(tab.id, false);
+        await this.connectTab(tab.id);
+        const loaded = this.whenTabComplete(tab.id, true);
+        await chrome.tabs.update(tab.id, { url });
+        await loaded;
+      } else {
+        // Wait for tab to finish loading
+        await this.waitForTabLoad(tab.id);
+        await this.connectTab(tab.id);
+      }
     }
 
+    const current = guardFirst && tab.id ? await chrome.tabs.get(tab.id).catch(() => tab) : tab;
     return {
       id: tab.id!,
-      url: tab.url || url,
-      title: tab.title || '',
-      active: tab.active,
+      url: current.url || url,
+      title: current.title || '',
+      active: current.active,
       connected: connect && tab.id === this.connectedTabId,
     };
+  }
+
+  /**
+   * Resolve when the tab's load is complete. With nextLoad, only a load that completes after
+   * this call counts (the tab is already complete and is about to navigate); otherwise an
+   * already-complete tab resolves at once. The listener goes in first, so no event is lost.
+   */
+  private whenTabComplete(tabId: number, nextLoad: boolean): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      };
+      const listener = (updatedTabId: number, changeInfo: { status?: string }) => {
+        if (updatedTabId === tabId && changeInfo.status === 'complete') done();
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      if (!nextLoad) {
+        chrome.tabs.get(tabId).then((tab) => { if (tab.status === 'complete') done(); }, () => undefined);
+      }
+    });
   }
 
   /**
