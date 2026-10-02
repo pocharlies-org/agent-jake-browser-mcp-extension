@@ -654,9 +654,9 @@ export class TabManager {
   }
 
   /**
-   * Close a tab.
+   * Close a tab (the connected one when no id is given). Returns the id it closed.
    */
-  async closeTab(tabId?: number): Promise<void> {
+  async closeTab(tabId?: number): Promise<number> {
     const targetTabId = tabId || this.connectedTabId;
 
     if (!targetTabId) {
@@ -669,6 +669,7 @@ export class TabManager {
 
     await chrome.tabs.remove(targetTabId);
     log.info(`Closed tab: ${targetTabId}`);
+    return targetTabId;
   }
 
   /**
