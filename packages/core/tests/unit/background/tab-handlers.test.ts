@@ -36,14 +36,3 @@ describe('browser_close_tab', () => {
     expect(closeTab).not.toHaveBeenCalled();
   });
 });
-
-describe('browser_list_tabs', () => {
-  it('announces that this build closes tabs by id', async () => {
-    const { handlers } = contextWith(7);
-
-    const answer = (await handlers.browser_list_tabs({})) as { tabs: Array<{ id: number }>; closeById: boolean };
-
-    expect(answer.closeById).toBe(true);
-    expect(answer.tabs.map((t) => t.id)).toEqual([7]);
-  });
-});

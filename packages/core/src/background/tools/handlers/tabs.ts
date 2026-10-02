@@ -12,10 +12,8 @@ export function createTabHandlers(ctx: HandlerContext): HandlerMap {
       return { tab: tabInfo };
     },
 
-    // closeById tells the server this build closes the tab it is asked for (see browser_close_tab):
-    // its tab reaper closes nothing on a browser that does not say so.
     browser_list_tabs: async () => {
-      return { tabs: await ctx.tabManager.listTabs(), closeById: true };
+      return ctx.tabManager.listTabs();
     },
 
     browser_switch_tab: async (payload) => {
@@ -30,8 +28,8 @@ export function createTabHandlers(ctx: HandlerContext): HandlerMap {
       return { sentToBack: tabId ?? ctx.tabManager.getConnectedTabId(), activatedTabId };
     },
 
-    // The server closes an idle agent tab by id (its tab reaper), so the id must be honoured:
-    // ignoring it closed the connected tab instead. The answer echoes the id actually closed.
+    // The id must be honoured: ignoring it closed the connected tab instead of the requested
+    // one. The answer echoes the id actually closed so callers can verify the effect.
     browser_close_tab: async (payload) => {
       const { tabId } = schemas.browser_close_tab.parse(payload ?? {});
       const closed = await ctx.tabManager.closeTab(tabId);
