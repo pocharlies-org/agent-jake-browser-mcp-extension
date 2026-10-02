@@ -186,6 +186,44 @@ describe('TabManager CDP readiness', () => {
     expect(mockChrome.debugger.attach).toHaveBeenCalledWith({ tabId: 101 }, expect.any(String));
   });
 
+  it('turns WebAuthn into an immediate failure instead of the native security-key dialog', async () => {
+    // Regression: GitHub's 2FA page asked for a security key through Chrome's native dialog,
+    // which the agent cannot answer and which hid the authenticator-app (1Password TOTP) path.
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
+    mockChrome.debugger.attach.mockResolvedValue(undefined);
+    mockChrome.debugger.sendCommand.mockImplementation(async (_debuggee, method) =>
+      method === 'WebAuthn.addVirtualAuthenticator' ? { authenticatorId: 'va-1' } : {});
+
+    await manager.connectTab(101, 'https://example.com');
+
+    const webauthn = mockChrome.debugger.sendCommand.mock.calls.filter(([, method]) => String(method).startsWith('WebAuthn.'));
+    expect(webauthn.map(([, method]) => method)).toEqual([
+      'WebAuthn.disable',
+      'WebAuthn.enable',
+      'WebAuthn.addVirtualAuthenticator',
+      'WebAuthn.setResponseOverrideBits',
+    ]);
+    expect(webauthn[1][2]).toEqual({ enableUI: false });
+    expect(webauthn[2][2]).toEqual({
+      options: expect.objectContaining({ hasUserVerification: true, isUserVerified: false, automaticPresenceSimulation: true }),
+    });
+    expect(webauthn[3][2]).toEqual({ authenticatorId: 'va-1', isBadUP: true });
+  });
+
+  it('still connects when the WebAuthn domain is unavailable', async () => {
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });
+    mockChrome.debugger.attach.mockResolvedValue(undefined);
+    mockChrome.debugger.sendCommand.mockImplementation(async (_debuggee, method) => {
+      if (String(method).startsWith('WebAuthn.')) throw new Error(`'${method}' wasn't found`);
+      return {};
+    });
+
+    await expect(manager.connectTab(101, 'https://example.com')).resolves.toBeUndefined();
+    expect(manager.getConnectedTabId()).toBe(101);
+  });
+
   it('reattaches and retries once when command fails with detached debugger', async () => {
     const manager = new TabManager();
     mockChrome.tabs.get.mockResolvedValue({ id: 101, title: 'Demo', url: 'https://example.com' });

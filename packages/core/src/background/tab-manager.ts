@@ -271,7 +271,42 @@ export class TabManager {
       }
     }
 
+    await this.installWebAuthnGuard(tabId);
     await this.installDialogAutoAccept(tabId);
+  }
+
+  /**
+   * An agent cannot touch a security key, so a WebAuthn request (passkey, security-key 2FA)
+   * must not raise Chrome's native "Use your security key" dialog: it covers the page, waits
+   * for a hand nobody will lend and keeps the site from offering its other method — the
+   * authenticator-app code that browser_fill_secret types from 1Password.
+   *
+   * With the native UI off and one virtual authenticator that holds no credential, every
+   * navigator.credentials call fails at once with NotAllowedError and the site falls back.
+   * The authenticator verifies no user and its responses carry no user presence, so it cannot
+   * register a passkey either. It lives on the tab, across navigations, until we detach.
+   * Not fatal: without it only the native dialog comes back.
+   */
+  private async installWebAuthnGuard(tabId: number): Promise<void> {
+    const target = { tabId };
+    try {
+      // Dropping the previous session's authenticator keeps a re-attach at exactly one.
+      await chrome.debugger.sendCommand(target, 'WebAuthn.disable').catch(() => undefined);
+      await chrome.debugger.sendCommand(target, 'WebAuthn.enable', { enableUI: false });
+      const { authenticatorId } = await chrome.debugger.sendCommand(target, 'WebAuthn.addVirtualAuthenticator', {
+        options: {
+          protocol: 'ctap2',
+          transport: 'usb',
+          hasResidentKey: true,
+          hasUserVerification: true,
+          isUserVerified: false,
+          automaticPresenceSimulation: true,
+        },
+      }) as { authenticatorId: string };
+      await chrome.debugger.sendCommand(target, 'WebAuthn.setResponseOverrideBits', { authenticatorId, isBadUP: true });
+    } catch (error) {
+      log.warn('WebAuthn guard not installed, native security-key dialogs may appear:', error);
+    }
   }
 
   /** Only one upload may consume the next file chooser event. */
