@@ -79,6 +79,15 @@ describe('TabManager CDP readiness', () => {
     await expect(manager.closeTab(0)).rejects.toThrow('Tab 0 does not exist');
     expect(mockChrome.tabs.remove).not.toHaveBeenCalled();
 
+    // tabId 0 EXISTING: the real chrome.tabs.remove(0) closes that window (id 0 is a valid
+    // window id), so honouring it is not optional — the old `||` fell back to the connected
+    // tab (7) and disconnected the agent session instead.
+    mockChrome.tabs.get.mockImplementation(async (id: number) => ({ id }));
+    await expect(manager.closeTab(0)).resolves.toBe(0);
+    expect(mockChrome.tabs.remove).toHaveBeenCalledWith(0);
+    expect(mockChrome.debugger.detach).not.toHaveBeenCalled();
+    expect(manager.getConnectedTabId()).toBe(7);
+
     // An existing non-connected tab closes without touching the agent session.
     mockChrome.tabs.get.mockImplementation(async (id: number) => ({ id }));
     await expect(manager.closeTab(42)).resolves.toBe(42);

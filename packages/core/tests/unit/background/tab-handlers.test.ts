@@ -7,7 +7,7 @@ function contextWith(connectedTabId: number) {
   const closeTab = vi.fn(async (tabId?: number) => {
     // Mirrors the real manager: explicit id honoured (0 included), connected tab only on omission.
     const target = tabId ?? connectedTabId;
-    if (target !== 7 && target !== 42) throw new Error(`Tab ${target} does not exist`);
+    if (target !== 7 && target !== 42 && target !== 0) throw new Error(`Tab ${target} does not exist`);
     return target;
   });
   const listTabs = vi.fn(async () => [{ id: connectedTabId, url: 'https://a.example/', title: 'a', active: true, connected: true }]);
@@ -34,11 +34,15 @@ describe('browser_close_tab', () => {
     expect(answer).toEqual({ closed: true, tabId: 7 });
   });
 
-  it('never substitutes the connected tab for an explicit unknown id', async () => {
+  it('never substitutes the connected tab for an explicit id, existing or not', async () => {
     const { handlers, closeTab } = contextWith(7);
 
-    await expect(handlers.browser_close_tab({ tabId: 0 })).rejects.toThrow('Tab 0 does not exist');
+    // 0 is a real window id in chrome.tabs.remove: it must be honoured, not replaced by 7.
+    await expect(handlers.browser_close_tab({ tabId: 0 })).resolves.toEqual({ closed: true, tabId: 0 });
     expect(closeTab).toHaveBeenCalledWith(0);
+
+    await expect(handlers.browser_close_tab({ tabId: 99 })).rejects.toThrow('Tab 99 does not exist');
+    expect(closeTab).toHaveBeenCalledWith(99);
   });
 
   it('rejects an id that is not a number', async () => {
