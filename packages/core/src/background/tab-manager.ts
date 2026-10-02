@@ -104,8 +104,7 @@ export class TabManager {
     // If tab is chrome://newtab/, navigate to about:blank first
     // (Chrome blocks extensions from accessing chrome:// URLs)
     if (tabUrl === 'chrome://newtab/') {
-      await chrome.tabs.update(tabId, { url: 'about:blank' });
-      await this.waitForTabLoad(tabId);
+      await this.waitForNextTabLoad(tabId, () => chrome.tabs.update(tabId, { url: 'about:blank' }));
     }
 
     // Disconnect previous tab if any
@@ -750,51 +749,86 @@ export class TabManager {
    * Wait for a tab to finish loading.
    */
   /**
-   * Wait for a tab's next completed load. Bounded and cancel-safe by design:
-   * - resolves when the tab reaches status 'complete' (or is already complete);
-   * - rejects if the tab is closed while waiting (chrome.tabs.onRemoved);
-   * - rejects after `timeout` ms instead of hanging forever.
-   * Every exit path removes both listeners, so a failed or timed-out wait can never
-   * leave handlers retained on chrome.tabs events (review 5394880058, P1 waits).
+   * Wait for a tab to be loaded NOW: resolves immediately when the tab already reports
+   * status 'complete' (a fresh tab whose load finished before we subscribed, a cached page,
+   * about:blank), otherwise waits for the next completion event. Bounded and leak-free:
+   * rejects on timeout, on the tab being closed, or on the tab not existing, and every exit
+   * path removes both listeners. For create/adopt flows — never for a navigation you are
+   * about to trigger (a previous load's 'complete' would resolve it early); use
+   * waitForNextTabLoad for those.
    */
   public waitForTabLoad(tabId: number, timeout = TIMEOUTS.TAB_LOAD): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let settled = false;
+    return this.tabLoadWait(tabId, timeout, true).promise;
+  }
+
+  /**
+   * Arm the wait BEFORE triggering a navigation (update/reload) and resolve only on the
+   * completion that follows the trigger. A 'complete' from a PREVIOUS load never resolves
+   * it: the state is deliberately not consulted. If the trigger itself fails, the wait is
+   * cancelled, listeners are removed and the trigger error propagates. Bounded and
+   * leak-free like waitForTabLoad.
+   */
+  public async waitForNextTabLoad(
+    tabId: number,
+    trigger: () => Promise<unknown>,
+    timeout = TIMEOUTS.TAB_LOAD,
+  ): Promise<void> {
+    const wait = this.tabLoadWait(tabId, timeout, false);
+    try {
+      await trigger();
+    } catch (error) {
+      wait.cancel(new Error(`Navigation trigger failed: ${(error as Error).message}`));
+      throw error;
+    }
+    await wait.promise;
+  }
+
+  private tabLoadWait(
+    tabId: number,
+    timeout: number,
+    resolveIfAlreadyComplete: boolean,
+  ): { promise: Promise<void>; cancel: (reason: Error) => void } {
+    let settle: (fn: () => void) => void = () => undefined;
+    let done = false;
+    const promise = new Promise<void>((resolve, reject) => {
+      let fail: (e: Error) => void = () => undefined;
       const onUpdated = (updatedTabId: number, changeInfo: { status?: string }) => {
         if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          finish(() => resolve());
+          settle(() => resolve());
         }
       };
       const onRemoved = (removedTabId: number) => {
         if (removedTabId === tabId) {
-          finish(() => reject(new Error(`Tab ${tabId} was closed while waiting for it to load`)));
+          settle(() => reject(new Error(`Tab ${tabId} was closed while waiting for it to load`)));
         }
       };
+      const timer = setTimeout(() => {
+        settle(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
+      }, timeout);
       const cleanup = () => {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(onUpdated);
         chrome.tabs.onRemoved.removeListener(onRemoved);
       };
-      const finish = (fn: () => void) => {
-        if (settled) return;
-        settled = true;
+      settle = (fn) => {
+        if (done) return;
+        done = true;
         cleanup();
         fn();
       };
-      const timer = setTimeout(() => {
-        finish(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
-      }, timeout);
+      fail = (e) => settle(() => reject(e));
       // Listeners go in first, so no completion event is lost between subscribe and check.
       chrome.tabs.onUpdated.addListener(onUpdated);
       chrome.tabs.onRemoved.addListener(onRemoved);
-      // Existence probe only: the wait stays event-gated on purpose — a tab already reporting
-      // 'complete' from a PREVIOUS load must not resolve a navigate/reload wait early.
-      chrome.tabs.get(tabId).catch(
-        () => finish(() => reject(new Error(`Tab ${tabId} does not exist`))),
+      chrome.tabs.get(tabId).then(
+        (tab) => {
+          if (resolveIfAlreadyComplete && tab.status === 'complete') settle(() => resolve());
+        },
+        () => fail(new Error(`Tab ${tabId} does not exist`)),
       );
     });
+    return { promise, cancel: (e) => { if (!done) settle(() => { throw e; }); } };
   }
-
   /**
    * Clear any live-connection UI/guards from old extension builds.
    * Automation tabs must stay unobstructed for agent-driven clicks.
