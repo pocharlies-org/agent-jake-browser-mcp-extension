@@ -28,8 +28,9 @@ export function createTabHandlers(ctx: HandlerContext): HandlerMap {
       return { sentToBack: tabId ?? ctx.tabManager.getConnectedTabId(), activatedTabId };
     },
 
-    // The id must be honoured: ignoring it closed the connected tab instead of the requested
-    // one. The answer echoes the id actually closed so callers can verify the effect.
+    // Honour the requested id: explicit ids (0 included) are never replaced by the connected
+    // tab, and unknown ids are rejected before any effect. The answer echoes the id actually
+    // closed so callers can verify the effect.
     browser_close_tab: async (payload) => {
       const { tabId } = schemas.browser_close_tab.parse(payload ?? {});
       const closed = await ctx.tabManager.closeTab(tabId);
