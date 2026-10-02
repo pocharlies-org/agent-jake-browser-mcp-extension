@@ -65,6 +65,10 @@ export const schemas = {
     tabId: z.number().optional(),
   }),
 
+  browser_close_tab: z.object({
+    tabId: z.number().optional(),
+  }),
+
   browser_get_text: z.object({
     ref: z.string(),
   }),

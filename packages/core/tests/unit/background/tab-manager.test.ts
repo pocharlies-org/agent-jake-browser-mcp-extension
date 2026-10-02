@@ -67,6 +67,39 @@ describe('TabManager CDP readiness', () => {
     vi.clearAllMocks();
   });
 
+  it('closeTab honours an explicit id and rejects unknown ids before any effect', async () => {
+    // Regression (review 5394985775): tabId 0 used to hit the `||` fallback and close the
+    // CONNECTED tab (7), disconnecting the agent session. An explicit id must be honoured as
+    // given or rejected before effects; the connected tab is only the fallback on omission.
+    const manager = new TabManager();
+    (manager as unknown as { connectedTabId: number | null }).connectedTabId = 7;
+    mockChrome.tabs.remove.mockReset().mockResolvedValue(undefined);
+    mockChrome.tabs.get.mockRejectedValue(new Error('No tab with id'));
+
+    await expect(manager.closeTab(0)).rejects.toThrow('Tab 0 does not exist');
+    expect(mockChrome.tabs.remove).not.toHaveBeenCalled();
+
+    // tabId 0 EXISTING: the real chrome.tabs.remove(0) closes that window (id 0 is a valid
+    // window id), so honouring it is not optional — the old `||` fell back to the connected
+    // tab (7) and disconnected the agent session instead.
+    mockChrome.tabs.get.mockImplementation(async (id: number) => ({ id }));
+    await expect(manager.closeTab(0)).resolves.toBe(0);
+    expect(mockChrome.tabs.remove).toHaveBeenCalledWith(0);
+    expect(mockChrome.debugger.detach).not.toHaveBeenCalled();
+    expect(manager.getConnectedTabId()).toBe(7);
+
+    // An existing non-connected tab closes without touching the agent session.
+    mockChrome.tabs.get.mockImplementation(async (id: number) => ({ id }));
+    await expect(manager.closeTab(42)).resolves.toBe(42);
+    expect(mockChrome.tabs.remove).toHaveBeenCalledWith(42);
+    expect(manager.getConnectedTabId()).toBe(7);
+
+    // Omission still closes the connected tab and reports its id.
+    mockChrome.debugger.detach.mockReset().mockResolvedValue(undefined);
+    await expect(manager.closeTab()).resolves.toBe(7);
+    expect(mockChrome.tabs.remove).toHaveBeenLastCalledWith(7);
+  });
+
   it('cancels a file chooser event wait without a late timeout rejection', async () => {
     const manager = new TabManager();
     (manager as unknown as { connectedTabId: number }).connectedTabId = 101;

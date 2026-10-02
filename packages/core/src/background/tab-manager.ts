@@ -654,13 +654,23 @@ export class TabManager {
   }
 
   /**
-   * Close a tab.
+   * Close a tab and report which one actually closed.
+   *
+   * An explicit tabId is honoured as given — including falsy ids like 0 — and is rejected
+   * BEFORE any effect when the tab does not exist; the connected tab is only the fallback
+   * when the id is omitted. The previous `||` fallback treated tabId 0 as "no id" and
+   * disconnected/closed the connected tab instead, which is exactly the damage this tool
+   * must never do.
    */
-  async closeTab(tabId?: number): Promise<void> {
-    const targetTabId = tabId || this.connectedTabId;
+  async closeTab(tabId?: number): Promise<number> {
+    const targetTabId = tabId ?? this.connectedTabId;
 
-    if (!targetTabId) {
+    if (targetTabId === null || targetTabId === undefined) {
       throw new Error('No tab specified and no connected tab');
+    }
+
+    if (!await this.tabExists(targetTabId)) {
+      throw new Error(`Tab ${targetTabId} does not exist`);
     }
 
     if (targetTabId === this.connectedTabId) {
@@ -669,6 +679,7 @@ export class TabManager {
 
     await chrome.tabs.remove(targetTabId);
     log.info(`Closed tab: ${targetTabId}`);
+    return targetTabId;
   }
 
   /**
