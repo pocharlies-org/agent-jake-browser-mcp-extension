@@ -6,7 +6,7 @@
 import { log } from '@/utils/logger';
 import { logTab, logError } from './activity-log';
 import type { TabInfo } from '@/types/messages';
-import { DEBUGGER } from '@/constants';
+import { DEBUGGER, TIMEOUTS } from '@/constants';
 import { pageEvents } from './page-events';
 
 export interface CdpStatus {
@@ -560,9 +560,20 @@ export class TabManager {
     const tab = await chrome.tabs.create({ url, active });
 
     if (connect && tab.id) {
-      // Wait for tab to finish loading
-      await this.waitForTabLoad(tab.id);
-      await this.connectTab(tab.id);
+      try {
+        // Wait for tab to finish loading (bounded; see waitForTabLoad)
+        await this.waitForTabLoad(tab.id);
+        await this.connectTab(tab.id);
+      } catch (error) {
+        // Cleanup on every exit: a tab we created but failed to drive must not linger
+        // half-connected — drop any partial session and remove our own tab, then report
+        // the original failure. Tabs we did not create are never touched by this path.
+        if (this.connectedTabId === tab.id) {
+          await this.disconnectTab().catch(() => undefined);
+        }
+        await chrome.tabs.remove(tab.id).catch(() => undefined);
+        throw error;
+      }
     }
 
     return {
@@ -738,18 +749,49 @@ export class TabManager {
   /**
    * Wait for a tab to finish loading.
    */
-  public waitForTabLoad(tabId: number): Promise<void> {
-    return new Promise((resolve) => {
-      const listener = (
-        updatedTabId: number,
-        changeInfo: { status?: string }
-      ) => {
+  /**
+   * Wait for a tab's next completed load. Bounded and cancel-safe by design:
+   * - resolves when the tab reaches status 'complete' (or is already complete);
+   * - rejects if the tab is closed while waiting (chrome.tabs.onRemoved);
+   * - rejects after `timeout` ms instead of hanging forever.
+   * Every exit path removes both listeners, so a failed or timed-out wait can never
+   * leave handlers retained on chrome.tabs events (review 5394880058, P1 waits).
+   */
+  public waitForTabLoad(tabId: number, timeout = TIMEOUTS.TAB_LOAD): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onUpdated = (updatedTabId: number, changeInfo: { status?: string }) => {
         if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
+          finish(() => resolve());
         }
       };
-      chrome.tabs.onUpdated.addListener(listener);
+      const onRemoved = (removedTabId: number) => {
+        if (removedTabId === tabId) {
+          finish(() => reject(new Error(`Tab ${tabId} was closed while waiting for it to load`)));
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.tabs.onRemoved.removeListener(onRemoved);
+      };
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
+      const timer = setTimeout(() => {
+        finish(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
+      }, timeout);
+      // Listeners go in first, so no completion event is lost between subscribe and check.
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs.onRemoved.addListener(onRemoved);
+      // Existence probe only: the wait stays event-gated on purpose — a tab already reporting
+      // 'complete' from a PREVIOUS load must not resolve a navigate/reload wait early.
+      chrome.tabs.get(tabId).catch(
+        () => finish(() => reject(new Error(`Tab ${tabId} does not exist`))),
+      );
     });
   }
 

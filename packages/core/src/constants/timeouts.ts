@@ -24,6 +24,9 @@ export const TIMEOUTS = {
 
   /** Request timeout for MCP messages (ms) */
   REQUEST_TIMEOUT: 30000,
+
+  /** Maximum wait for a tab to finish loading before the wait is abandoned (ms) */
+  TAB_LOAD: 30000,
 } as const;
 
 export type TimeoutKey = keyof typeof TIMEOUTS;
