@@ -1,0 +1,23 @@
+# INFRA-388 (M3): guarda del origen y del layering. Corre junto a ci.yml y pr-review.yml.
+#   - imagen-solo-canonical: la build de la extensión solo es desplegable desde el repo
+#     canónico; el self-test demuestra en cada run el fallo desde un origen no canónico (C4b).
+#   - core-sin-casas: grep D2 sobre packages/core (y packages/protocol cuando exista).
+name: Source guard
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  guarda:
+    # regla ci-runners-arc: runners propios de la org (pool org-level, sin alta)
+    runs-on: arc-k8s
+    steps:
+      - uses: actions/checkout@v4
+      - name: Imagen solo desde el canonico (dry-run)
+        run: bash scripts/image-origin-guard.sh --self-test
+      - name: Core sin casas (paquete entero)
+        run: bash scripts/core-no-houses.sh
