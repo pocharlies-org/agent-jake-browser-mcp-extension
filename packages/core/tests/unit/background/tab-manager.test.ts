@@ -388,6 +388,43 @@ describe('TabManager background-tab control', () => {
     }
   });
 
+  it('waitForNextTabLoad ends on timeout even when the trigger never settles, with listeners cleaned', async () => {
+    // Review 5396251544 P1: awaiting the trigger BEFORE observing the wait left the outer
+    // operation pending forever when the trigger was deferred — the inner reject cleaned up
+    // but nothing terminated the caller. Both lifecycles must be observed from the start.
+    vi.useFakeTimers();
+    try {
+      const manager = new TabManager();
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+
+      const deferred = new Promise<void>(() => undefined); // trigger that never settles
+      const outer = manager.waitForNextTabLoad(55, () => deferred, 1000);
+      const assertion = expect(outer).rejects.toThrow('Timed out after 1000ms waiting for tab 55 to load');
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion; // the OUTER operation terminates, not just the inner wait
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitForNextTabLoad preserves the identity of the trigger error and rejects the wait on cancel', async () => {
+    // Review 5396251544 P2: cancel threw synchronously after cleanup (promise pending forever)
+    // and masked the original error behind 'Navigation trigger failed'. The cancel must REJECT
+    // the wait promise with the ORIGINAL error object — same identity, no wrapper.
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+    const original = new Error('nav blocked by policy');
+
+    const failing = manager.waitForNextTabLoad(55, () => Promise.reject(original), 1000);
+    await expect(failing).rejects.toBe(original); // identity, not message equality
+    expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+    expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+  });
+
   it('createTab removes its own tab and reports the original error when the load wait fails', async () => {
     vi.useFakeTimers();
     try {

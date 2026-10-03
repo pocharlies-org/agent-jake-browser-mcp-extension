@@ -768,30 +768,41 @@ export class TabManager {
    * cancelled, listeners are removed and the trigger error propagates. Bounded and
    * leak-free like waitForTabLoad.
    */
-  public async waitForNextTabLoad(
+  public waitForNextTabLoad(
     tabId: number,
     trigger: () => Promise<unknown>,
     timeout = TIMEOUTS.TAB_LOAD,
   ): Promise<void> {
     const wait = this.tabLoadWait(tabId, timeout, false);
-    try {
-      await trigger();
-    } catch (error) {
-      wait.cancel(new Error(`Navigation trigger failed: ${(error as Error).message}`));
-      throw error;
-    }
-    await wait.promise;
+    // Both lifecycles are observed from the start, and only the WAIT decides when the caller
+    // resumes: a timeout, a closed tab or a missing tab end the operation even if the trigger
+    // never settles, while a failed trigger cancels the wait with its ORIGINAL error object
+    // (identity preserved, no wrapper, no late success). The trigger's own rejection is
+    // handled here, so it can never surface as an unhandled rejection.
+    void (async () => {
+      try {
+        await trigger();
+      } catch (error) {
+        wait.cancel(error);
+      }
+    })();
+    return wait.promise;
   }
 
   private tabLoadWait(
     tabId: number,
     timeout: number,
     resolveIfAlreadyComplete: boolean,
-  ): { promise: Promise<void>; cancel: (reason: Error) => void } {
-    let settle: (fn: () => void) => void = () => undefined;
-    let done = false;
+  ): { promise: Promise<void>; cancel: (reason: unknown) => void } {
+    let cancel: (reason: unknown) => void = () => undefined;
     const promise = new Promise<void>((resolve, reject) => {
-      let fail: (e: Error) => void = () => undefined;
+      let done = false;
+      const settle = (fn: () => void) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        fn();
+      };
       const onUpdated = (updatedTabId: number, changeInfo: { status?: string }) => {
         if (updatedTabId === tabId && changeInfo.status === 'complete') {
           settle(() => resolve());
@@ -802,21 +813,15 @@ export class TabManager {
           settle(() => reject(new Error(`Tab ${tabId} was closed while waiting for it to load`)));
         }
       };
-      const timer = setTimeout(() => {
-        settle(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
-      }, timeout);
       const cleanup = () => {
         clearTimeout(timer);
         chrome.tabs.onUpdated.removeListener(onUpdated);
         chrome.tabs.onRemoved.removeListener(onRemoved);
       };
-      settle = (fn) => {
-        if (done) return;
-        done = true;
-        cleanup();
-        fn();
-      };
-      fail = (e) => settle(() => reject(e));
+      const timer = setTimeout(() => {
+        settle(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
+      }, timeout);
+      cancel = (reason) => settle(() => reject(reason));
       // Listeners go in first, so no completion event is lost between subscribe and check.
       chrome.tabs.onUpdated.addListener(onUpdated);
       chrome.tabs.onRemoved.addListener(onRemoved);
@@ -824,12 +829,11 @@ export class TabManager {
         (tab) => {
           if (resolveIfAlreadyComplete && tab.status === 'complete') settle(() => resolve());
         },
-        () => fail(new Error(`Tab ${tabId} does not exist`)),
+        () => settle(() => reject(new Error(`Tab ${tabId} does not exist`))),
       );
     });
-    return { promise, cancel: (e) => { if (!done) settle(() => { throw e; }); } };
-  }
-  /**
+    return { promise, cancel };
+  }  /**
    * Clear any live-connection UI/guards from old extension builds.
    * Automation tabs must stay unobstructed for agent-driven clicks.
    */
