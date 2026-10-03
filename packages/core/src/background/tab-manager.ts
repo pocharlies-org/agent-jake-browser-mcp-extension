@@ -6,7 +6,7 @@
 import { log } from '@/utils/logger';
 import { logTab, logError } from './activity-log';
 import type { TabInfo } from '@/types/messages';
-import { DEBUGGER } from '@/constants';
+import { DEBUGGER, TIMEOUTS } from '@/constants';
 import { pageEvents } from './page-events';
 
 export interface CdpStatus {
@@ -104,8 +104,7 @@ export class TabManager {
     // If tab is chrome://newtab/, navigate to about:blank first
     // (Chrome blocks extensions from accessing chrome:// URLs)
     if (tabUrl === 'chrome://newtab/') {
-      await chrome.tabs.update(tabId, { url: 'about:blank' });
-      await this.waitForTabLoad(tabId);
+      await this.waitForNextTabLoad(tabId, () => chrome.tabs.update(tabId, { url: 'about:blank' }));
     }
 
     // Disconnect previous tab if any
@@ -560,9 +559,20 @@ export class TabManager {
     const tab = await chrome.tabs.create({ url, active });
 
     if (connect && tab.id) {
-      // Wait for tab to finish loading
-      await this.waitForTabLoad(tab.id);
-      await this.connectTab(tab.id);
+      try {
+        // Wait for tab to finish loading (bounded; see waitForTabLoad)
+        await this.waitForTabLoad(tab.id);
+        await this.connectTab(tab.id);
+      } catch (error) {
+        // Cleanup on every exit: a tab we created but failed to drive must not linger
+        // half-connected — drop any partial session and remove our own tab, then report
+        // the original failure. Tabs we did not create are never touched by this path.
+        if (this.connectedTabId === tab.id) {
+          await this.disconnectTab().catch(() => undefined);
+        }
+        await chrome.tabs.remove(tab.id).catch(() => undefined);
+        throw error;
+      }
     }
 
     return {
@@ -749,22 +759,92 @@ export class TabManager {
   /**
    * Wait for a tab to finish loading.
    */
-  public waitForTabLoad(tabId: number): Promise<void> {
-    return new Promise((resolve) => {
-      const listener = (
-        updatedTabId: number,
-        changeInfo: { status?: string }
-      ) => {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      };
-      chrome.tabs.onUpdated.addListener(listener);
-    });
+  /**
+   * Wait for a tab to be loaded NOW: resolves immediately when the tab already reports
+   * status 'complete' (a fresh tab whose load finished before we subscribed, a cached page,
+   * about:blank), otherwise waits for the next completion event. Bounded and leak-free:
+   * rejects on timeout, on the tab being closed, or on the tab not existing, and every exit
+   * path removes both listeners. For create/adopt flows — never for a navigation you are
+   * about to trigger (a previous load's 'complete' would resolve it early); use
+   * waitForNextTabLoad for those.
+   */
+  public waitForTabLoad(tabId: number, timeout = TIMEOUTS.TAB_LOAD): Promise<void> {
+    return this.tabLoadWait(tabId, timeout, true).promise;
   }
 
   /**
+   * Arm the wait BEFORE triggering a navigation (update/reload) and resolve only on the
+   * completion that follows the trigger. A 'complete' from a PREVIOUS load never resolves
+   * it: the state is deliberately not consulted. If the trigger itself fails, the wait is
+   * cancelled, listeners are removed and the trigger error propagates. Bounded and
+   * leak-free like waitForTabLoad.
+   */
+  public waitForNextTabLoad(
+    tabId: number,
+    trigger: () => Promise<unknown>,
+    timeout = TIMEOUTS.TAB_LOAD,
+  ): Promise<void> {
+    const wait = this.tabLoadWait(tabId, timeout, false);
+    // Both lifecycles are observed from the start, and only the WAIT decides when the caller
+    // resumes: a timeout, a closed tab or a missing tab end the operation even if the trigger
+    // never settles, while a failed trigger cancels the wait with its ORIGINAL error object
+    // (identity preserved, no wrapper, no late success). The trigger's own rejection is
+    // handled here, so it can never surface as an unhandled rejection.
+    void (async () => {
+      try {
+        await trigger();
+      } catch (error) {
+        wait.cancel(error);
+      }
+    })();
+    return wait.promise;
+  }
+
+  private tabLoadWait(
+    tabId: number,
+    timeout: number,
+    resolveIfAlreadyComplete: boolean,
+  ): { promise: Promise<void>; cancel: (reason: unknown) => void } {
+    let cancel: (reason: unknown) => void = () => undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      let done = false;
+      const settle = (fn: () => void) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        fn();
+      };
+      const onUpdated = (updatedTabId: number, changeInfo: { status?: string }) => {
+        if (updatedTabId === tabId && changeInfo.status === 'complete') {
+          settle(() => resolve());
+        }
+      };
+      const onRemoved = (removedTabId: number) => {
+        if (removedTabId === tabId) {
+          settle(() => reject(new Error(`Tab ${tabId} was closed while waiting for it to load`)));
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        chrome.tabs.onRemoved.removeListener(onRemoved);
+      };
+      const timer = setTimeout(() => {
+        settle(() => reject(new Error(`Timed out after ${timeout}ms waiting for tab ${tabId} to load`)));
+      }, timeout);
+      cancel = (reason) => settle(() => reject(reason));
+      // Listeners go in first, so no completion event is lost between subscribe and check.
+      chrome.tabs.onUpdated.addListener(onUpdated);
+      chrome.tabs.onRemoved.addListener(onRemoved);
+      chrome.tabs.get(tabId).then(
+        (tab) => {
+          if (resolveIfAlreadyComplete && tab.status === 'complete') settle(() => resolve());
+        },
+        () => settle(() => reject(new Error(`Tab ${tabId} does not exist`))),
+      );
+    });
+    return { promise, cancel };
+  }  /**
    * Clear any live-connection UI/guards from old extension builds.
    * Automation tabs must stay unobstructed for agent-driven clicks.
    */
