@@ -30,6 +30,7 @@ import {
   parseWsUrl,
   setServerUrl,
   setToken,
+  setWireMode,
   STORAGE_KEYS,
 } from '@/config/runtime';
 
@@ -229,6 +230,8 @@ async function handlePopupMessage(message: {
         connected: wsClient?.isConnected() || false,
         tabId: tabManager?.getConnectedTabId() || null,
         tabs,
+        // negotiating / incompatible / auth-unconfirmed / transient, sanitized endpoint, wire version
+        negotiation: wsClient?.getNegotiationStatus() ?? null,
       };
     }
 
@@ -266,7 +269,7 @@ async function handlePopupMessage(message: {
     }
 
     case 'saveServerConfig': {
-      const { serverUrl, token } = (payload || {}) as { serverUrl?: string; token?: string };
+      const { serverUrl, token, wireMode } = (payload || {}) as { serverUrl?: string; token?: string; wireMode?: string };
       if (typeof serverUrl === 'string') {
         const trimmed = serverUrl.trim();
         if (trimmed && parseWsUrl(trimmed) === null) {
@@ -276,6 +279,10 @@ async function handlePopupMessage(message: {
       }
       if (typeof token === 'string') {
         await setToken(token.trim());
+      }
+      if (wireMode === 'legacy' || wireMode === 'negotiated') {
+        // Changing the wire is an explicit operator action; it also clears a BLOCKED state via reload().
+        await setWireMode(wireMode);
       }
       // Reconnect immediately so the new URL/token take effect.
       cancelPairing();

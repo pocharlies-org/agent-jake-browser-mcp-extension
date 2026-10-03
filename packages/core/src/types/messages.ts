@@ -48,6 +48,10 @@ export interface IncomingMessage {
   id: string;
   type: ToolName;
   payload: Record<string, unknown>;
+  /** Negotiated wire only: the MCP session that owns this request. Consumers (INFRA-413) read it; they do not invent their own. */
+  sessionId?: string;
+  /** Negotiated wire only: opaque tab target for the session; never a Chrome numeric tab id. */
+  tabHandle?: string;
 }
 
 // Response back to browser-mcp server

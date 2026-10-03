@@ -4,7 +4,7 @@ on:
   pull_request:
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: arc-k8s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -12,6 +12,11 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Vendored protocol artifact (hash + offline catalog digest)
+        run: npm run verify:protocol
       - run: npm run typecheck
       - run: npm run test:unit
       - run: npm run build
+      - name: Core without houses (D2)
+        run: |
+          if grep -rEn 'house-pocharlies|house-staticduo|op-safe' packages/core --exclude-dir=node_modules --exclude-dir=dist --exclude=vendor-protocol.test.ts; then exit 1; fi
