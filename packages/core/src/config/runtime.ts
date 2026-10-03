@@ -25,7 +25,11 @@ export const STORAGE_KEYS = {
   token: 'ajb.token',
   connectionId: 'ajb.connectionId',
   pairCode: 'ajb.pairCode',
+  /** 'legacy' (default, unchanged wire) | 'negotiated' (hello + version/catalog check, no fallback). */
+  wireMode: 'ajb.wireMode',
 } as const;
+
+export type WireMode = 'legacy' | 'negotiated';
 
 export interface ParsedServerUrl {
   secure: boolean;
@@ -41,6 +45,8 @@ export interface RuntimeServerConfig extends ParsedServerUrl {
   token: string;
   /** Persistent per-install UUID (always present). */
   connectionId: string;
+  /** Which wire this install speaks. Existing installs stay `legacy` until explicitly switched. */
+  wireMode: WireMode;
   /** Where host/port/path came from. */
   source: ServerConfigSource;
   /** True when host/port/path come from ajb.serverUrl (source === 'manual'). */
@@ -164,7 +170,7 @@ export async function ensureConnectionId(): Promise<string> {
  * (an explicitly stored empty string clears the token for open-LAN setups).
  */
 export async function getEffectiveConfig(): Promise<RuntimeServerConfig> {
-  const stored = await storageGet([STORAGE_KEYS.serverUrl, STORAGE_KEYS.token]);
+  const stored = await storageGet([STORAGE_KEYS.serverUrl, STORAGE_KEYS.token, STORAGE_KEYS.wireMode]);
   const rawUrl = typeof stored[STORAGE_KEYS.serverUrl] === 'string'
     ? (stored[STORAGE_KEYS.serverUrl] as string)
     : '';
@@ -202,6 +208,7 @@ export async function getEffectiveConfig(): Promise<RuntimeServerConfig> {
     scheme: base.secure ? 'wss' : 'ws',
     token,
     connectionId,
+    wireMode: stored[STORAGE_KEYS.wireMode] === 'negotiated' ? 'negotiated' : 'legacy',
     source,
     fromStorage: source === 'manual',
   };
@@ -230,6 +237,36 @@ export async function setToken(token: string | null): Promise<void> {
     return;
   }
   await storageSet({ [STORAGE_KEYS.token]: token });
+}
+
+/** Persist the wire mode. 'legacy' removes the key so old installs keep behaving exactly as before. */
+export async function setWireMode(mode: WireMode): Promise<void> {
+  if (mode === 'negotiated') await storageSet({ [STORAGE_KEYS.wireMode]: 'negotiated' });
+  else await storageRemove([STORAGE_KEYS.wireMode]);
+}
+
+let fallbackEpoch: string | null = null;
+
+/**
+ * Profile epoch: changes when the browser session restarts (chrome.storage.session is cleared then), so any
+ * server-side state tied to the old epoch is invalid. Falls back to a per-worker UUID when session storage is absent.
+ */
+export async function ensureProfileEpoch(): Promise<string> {
+  try {
+    const area = (chrome.storage as unknown as { session?: chrome.storage.StorageArea }).session;
+    if (area) {
+      const stored = await area.get(['ajb.profileEpoch']);
+      const existing = stored['ajb.profileEpoch'];
+      if (typeof existing === 'string' && existing) return existing;
+      const fresh = crypto.randomUUID();
+      await area.set({ 'ajb.profileEpoch': fresh });
+      return fresh;
+    }
+  } catch {
+    // fall through to the per-worker value
+  }
+  fallbackEpoch ??= crypto.randomUUID();
+  return fallbackEpoch;
 }
 
 /**

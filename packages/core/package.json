@@ -37,7 +37,8 @@
     "pinia": "^3.0.4",
     "sharp": "^0.34.5",
     "vue": "^3.5.27",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "@agent-jake-browser/protocol": "file:../../vendor/protocol/agent-jake-browser-protocol.tgz"
   },
   "private": true,
   "exports": {
