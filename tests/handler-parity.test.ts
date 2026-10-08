@@ -7,7 +7,7 @@ import type { HandlerContext } from '../packages/core/src/background/tools/handl
 const handlers = () => createHandlerMap({} as HandlerContext);
 // Tools the server answers without a browser (serverSide) have no extension handler by design.
 // browser_run_code_unsafe also runs in the server process (it sends browser_cdp / browser_evaluate) but the
-// catalog does not mark it serverSide; marking it changes CATALOG_VERSION (a contract change), so it is listed here.
+// catalog does not mark it serverSide; marking it changes CATALOG_VERSION (a contract change, INFRA-719), so it is listed here.
 const SERVER_PROCESS_ONLY = ['browser_run_code_unsafe'];
 const browserTools = TOOL_CATALOG.filter((t) => !t.serverSide && !SERVER_PROCESS_ONLY.includes(t.name)).map((t) => t.name);
 
