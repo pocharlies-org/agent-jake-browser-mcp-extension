@@ -1,5 +1,5 @@
 {
-  "_comment": "Fixed compatibility matrix for the negotiated wire. IDENTICAL file in both repos (server: packages/core/tests/fixtures/harness, extension: vendor/protocol); edit both together (reviewed contract change). `cases` = server view (a client says hello); `extensionView` = extension view (a server of this kind answers the extension's hello). catalog: current|stale.",
+  "_comment": "Fixed compatibility matrix for the negotiated wire. IDENTICAL file in both repos (server: packages/core/tests/fixtures/harness, extension: vendor/protocol); edit both together (reviewed contract change). `cases` = server view (a client says hello); `extensionView` = extension view (a server of this kind answers the extension's hello); `artifactView` = the extension's vendored protocol tgz against the pack of the server source (server only: packages/protocol/tests/artifact.test.ts; `mutate` names how the vendored copy is altered). catalog: current|stale.",
   "serverWireVersions": [
     1
   ],
@@ -135,6 +135,28 @@
         "state": "BLOCKED",
         "code": "invalid_message"
       }
+    }
+  ],
+  "artifactView": [
+    {
+      "name": "vendored tgz is the pack of the server source",
+      "mutate": "none",
+      "expect": "match"
+    },
+    {
+      "name": "descriptor altered inside the tgz",
+      "mutate": "descriptors",
+      "expect": "mismatch"
+    },
+    {
+      "name": "code altered, provenance re-hashed to match (forged but self-consistent)",
+      "mutate": "code",
+      "expect": "mismatch"
+    },
+    {
+      "name": "provenance pins other wire versions",
+      "mutate": "wire-versions",
+      "expect": "mismatch"
     }
   ]
 }
