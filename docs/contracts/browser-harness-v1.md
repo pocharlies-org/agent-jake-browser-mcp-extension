@@ -1,5 +1,9 @@
 # Current extension wire contract (M1A)
 
+> **Status: deprecated (INFRA-386).** Unversioned legacy wire, kept unchanged and still the default
+> (`ajb.wireMode` absent = `legacy`). Superseded by [`browser-harness-v2.md`](browser-harness-v2.md).
+> Do not add behavior here; a breaking change is a new `.vN+1` document next to this one.
+
 This document records the existing contract, not the proposed M1B handshake.
 There is currently no Browser Harness version negotiation or session binding.
 

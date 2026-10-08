@@ -14,7 +14,8 @@
     "generate:icons": "npm run generate:icons --workspace @agent-browser/extension-core",
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "test:composition": "vitest run --config vitest.config.ts"
+    "test:composition": "vitest run --config vitest.config.ts",
+    "verify:protocol": "node vendor/protocol/verify.mjs vendor/protocol/agent-jake-browser-protocol.tgz vendor/protocol/provenance.json"
   },
   "keywords": [
     "chrome-extension",
@@ -27,7 +28,9 @@
   "devDependencies": {
     "@playwright/test": "^1.57.0",
     "typescript": "^5.9.3",
-    "vitest": "^2.1.0"
+    "vitest": "^2.1.0",
+    "ws": "^8.21.3",
+    "@types/ws": "^8.18.1"
   },
   "private": true,
   "workspaces": [
