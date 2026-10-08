@@ -2,7 +2,7 @@
   "package": "@agent-jake-browser/protocol",
   "version": "0.1.0",
   "sourceRepo": "pocharlies-org/agent-jake-browser-mcp-server",
-  "sourceSha": "7fa6cecbf4695df914dbcdba5a6e23b12813e1bf",
+  "sourceSha": "c907636c6bcad14c4cb082823b1d54f6786a6dae",
   "sourceLockfileSha256": "c05469cd16812477b3576e95803a22b12c5e20433385d1bf42e804712081827d",
   "toolchain": {
     "node": "v22.23.3",

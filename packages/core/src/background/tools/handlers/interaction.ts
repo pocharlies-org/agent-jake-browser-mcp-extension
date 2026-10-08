@@ -82,7 +82,7 @@ export function createInteractionHandlers(ctx: HandlerContext): HandlerMap {
     },
 
     browser_type: async (payload) => {
-      const { ref, text, clear } = schemas.browser_type.parse(payload);
+      const { ref, text, clear, secret } = schemas.browser_type.parse(payload);
       const tabId = ctx.tabManager.getConnectedTabId();
       if (!tabId) throw new Error('No tab connected');
 
@@ -127,10 +127,12 @@ export function createInteractionHandlers(ctx: HandlerContext): HandlerMap {
       }
 
       const result = await waitForStableOrNavigation(initialUrl, frameId);
+      // A secret leaves no trace in the answer: not in the result the server gets, not in any log of it.
+      const echo = secret ? {} : { typed: text };
       if (result.navigated) {
-        return { typed: text, cleared: clear, navigated: true, newUrl: result.newUrl };
+        return { ...echo, cleared: clear, navigated: true, newUrl: result.newUrl };
       }
-      return { typed: text, cleared: clear };
+      return { ...echo, cleared: clear };
     },
 
     browser_hover: async (payload) => {

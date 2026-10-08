@@ -19,6 +19,8 @@ export const schemas = {
     ref: z.string(),
     text: z.string(),
     clear: z.boolean().optional().default(false),
+    // A password or 2FA code: typed like any text, but never echoed back in the result.
+    secret: z.boolean().optional(),
   }),
 
   browser_hover: z.object({
