@@ -14,8 +14,7 @@ export function createNavigationHandlers(ctx: HandlerContext): HandlerMap {
         throw new Error('No tab connected');
       }
 
-      await chrome.tabs.update(tabId, { url });
-      await ctx.tabManager.waitForTabLoad(tabId);
+      await ctx.tabManager.waitForNextTabLoad(tabId, () => chrome.tabs.update(tabId, { url }));
 
       return { navigated: url };
     },
@@ -42,8 +41,7 @@ export function createNavigationHandlers(ctx: HandlerContext): HandlerMap {
     browser_reload: async () => {
       const tabId = ctx.tabManager.getConnectedTabId();
       if (tabId) {
-        await chrome.tabs.reload(tabId);
-        await ctx.tabManager.waitForTabLoad(tabId);
+        await ctx.tabManager.waitForNextTabLoad(tabId, () => chrome.tabs.reload(tabId));
       }
       return { success: true };
     },
