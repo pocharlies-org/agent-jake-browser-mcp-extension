@@ -2,7 +2,7 @@
   "package": "@agent-jake-browser/protocol",
   "version": "0.1.0",
   "sourceRepo": "pocharlies-org/agent-jake-browser-mcp-server",
-  "sourceSha": "5c255e3a5dcf9dbc4b8dfc24ead72d7c04d9328f",
+  "sourceSha": "7fa6cecbf4695df914dbcdba5a6e23b12813e1bf",
   "sourceLockfileSha256": "c05469cd16812477b3576e95803a22b12c5e20433385d1bf42e804712081827d",
   "toolchain": {
     "node": "v22.23.3",
@@ -13,7 +13,7 @@
   "supportedProtocolVersions": [
     1
   ],
-  "catalogVersion": "sha256:f7e7d2f5178afea3caa13fd262b7e1c81afe94cf550bbaceea3bd30e25cfe9b5",
-  "tgzSha256": "0cf1f6ba2e7b2b33134f39908877b07fdd9839dcab7f861d83bd5924ed06299b",
+  "catalogVersion": "sha256:5fdec80d1e86acd7feb6dd800cb446a79130346caa456191371397794acee7f2",
+  "tgzSha256": "4d24b0c0ecbec834c97960ac07d81b83a7de2a052c51f34f199aefbadaffae3a",
   "verifierSha256": "9c1eccde5bc418a570a8de5fa0a7df3f3fdacb2fa7b5a2575b930f9269a86307"
 }

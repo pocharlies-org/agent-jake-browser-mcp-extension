@@ -30,6 +30,18 @@ describe('durable activity history', () => {
     expect(saved).not.toContain('result');
   });
 
+  it('never keeps the text a browser_fill_secret typed (payload flagged secret, echoed in the result)', async () => {
+    const secret = 'hunter2-Sup3r$ecret';
+    await logTool('browser_type', `Type "${secret.slice(0, 20)}"`, true, 9, {
+      payload: { selector: '#pw', text: secret, clear: true, secret: true },
+      result: { typed: secret, cleared: true },
+    });
+    const saved = JSON.stringify(stored[key]);
+    expect(saved).not.toContain(secret);
+    expect(saved).not.toContain(secret.slice(0, 6));
+    expect(saved).toContain('browser_type');
+  });
+
   it('keeps numeric diagnostics while removing URLs and remote text', async () => {
     const { logConnection } = await import('@/background/activity-log');
     await logConnection('ws_close', 'https://example.test/?token=secret-marker-729', true,

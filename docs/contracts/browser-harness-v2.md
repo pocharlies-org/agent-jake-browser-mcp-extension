@@ -1,6 +1,7 @@
 # Browser Harness negotiated wire contract (v2) — extension side
 
-Status: **active, experimental**. Supersedes `browser-harness-v1.md` (deprecated, untouched). The wire,
+Status: **deprecated (INFRA-721)**, superseded by [`browser-harness-v3.md`](browser-harness-v3.md) (the tool set grew, so the catalog digest changed).
+Supersedes `browser-harness-v1.md` (deprecated, untouched). The wire,
 schemas, errors and limits are defined **once**, in the server repository (`packages/protocol`, doc
 `docs/contracts/browser-harness-v2.md`); this extension consumes that package as the vendored tarball
 `vendor/protocol/agent-jake-browser-protocol.tgz` (provenance and SHA-256 in `vendor/protocol/provenance.json`,
