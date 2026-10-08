@@ -138,6 +138,7 @@ function getToolDescription(type: string, payload: unknown, result: unknown): st
     case 'browser_click':
       return `Click on "${p?.ref || p?.selector}"`;
     case 'browser_type':
+      if (p?.secret) return `Type secret into "${p?.ref || p?.selector}"`;
       return `Type "${String(p?.text || '').slice(0, 20)}${(String(p?.text || '').length > 20) ? '...' : ''}"`;
     case 'browser_hover':
       return `Hover on "${p?.ref || p?.selector}"`;

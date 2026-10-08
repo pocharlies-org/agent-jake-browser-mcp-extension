@@ -267,7 +267,8 @@ export class WebSocketClient {
     }
 
     const data = JSON.stringify(message);
-    log.debug('Sending:', data);
+    // Only the envelope is logged: a result can carry what the page typed (browser_type with a secret).
+    log.debug('Sending:', { id: message.id, success: message.success });
     this.socket.send(data);
   }
 
