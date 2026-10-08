@@ -42,6 +42,12 @@ solo un `hello_ack` validado. Cada callback captura su socket y generación. Sin
 `npm run typecheck`, `npm run test:unit` (vitest, incluye `test:composition`), `npm run build`.
 Los tests del wire legacy no se editan; los negociados van al lado.
 
+Contrato de versión (INFRA-390): `vendor/protocol/version-matrix.json` es la misma matriz del servidor (idéntica byte a
+byte; el job `contract` del servidor lo comprueba y compara el tgz vendorizado con su pack). `tests/handler-parity.test.ts`
+exige un handler por cada tool del catálogo del protocolo que atiende el navegador, y ninguno más. `tests/vendor-protocol.test.ts`
+fija que el protocolo vendorizado es el único sitio de esquemas: los que la extensión aún tiene (hasta M1B.3) están listados y
+ninguno crece ni aparece uno nuevo.
+
 ## 7. CI/CD
 
 `.github/workflows/ci.yml` en runners **`arc-k8s`**. Sin publicación de paquetes ni despliegue desde aquí.

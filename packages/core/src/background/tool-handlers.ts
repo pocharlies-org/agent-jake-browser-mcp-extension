@@ -9,7 +9,7 @@ import { log } from '@/utils/logger';
 import { logTool, logError } from './activity-log';
 import { getKeyDefinition } from '@/constants/keys';
 import { createToolContext } from './tools/utils';
-import type { HandlerContext } from './tools/handlers';
+import type { HandlerContext, HandlerMap } from './tools/handlers';
 import {
   createNavigationHandlers,
   createInteractionHandlers,
@@ -48,12 +48,11 @@ function buildHandlerContext(tabManager: TabManager): HandlerContext {
 }
 
 /**
- * Create tool handlers bound to a tab manager.
+ * Every handler keyed by tool name. The only place the handler groups are composed:
+ * tests/handler-parity.test.ts checks these keys against the protocol catalog.
  */
-export function createToolHandlers(tabManager: TabManager) {
-  const ctx = buildHandlerContext(tabManager);
-
-  const handlers: Record<string, (payload: unknown) => Promise<unknown>> = {
+export function createHandlerMap(ctx: HandlerContext): HandlerMap {
+  return {
     ...createNavigationHandlers(ctx),
     ...createInteractionHandlers(ctx),
     ...createQueryHandlers(ctx),
@@ -62,6 +61,15 @@ export function createToolHandlers(tabManager: TabManager) {
     ...createUtilityHandlers(ctx),
     ...createDevtoolsHandlers(ctx),
   };
+}
+
+/**
+ * Create tool handlers bound to a tab manager.
+ */
+export function createToolHandlers(tabManager: TabManager) {
+  const ctx = buildHandlerContext(tabManager);
+
+  const handlers = createHandlerMap(ctx);
 
   /**
    * Handle incoming message from WebSocket.
