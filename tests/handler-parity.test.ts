@@ -11,7 +11,7 @@ const handlers = () => createHandlerMap({} as HandlerContext);
 // catalog does not mark it serverSide; marking it changes CATALOG_VERSION (a contract change, INFRA-719), so it is listed here.
 const SERVER_PROCESS_ONLY = ['browser_run_code_unsafe'];
 // Catalogued (contract v3, INFRA-721) behind a capability this extension does not offer yet: the passkey ceremony needs the
-// WebAuthn guard (PR 4, being split), so the server answers `capability_unavailable`. Remove it from this list with the handler.
+// WebAuthn guard (INFRA-374, extension PR 4 being split), so the server answers `capability_unavailable`. Remove it from this list with the handler.
 const PENDING_IN_EXTENSION = ['browser_passkey'];
 const browserTools = TOOL_CATALOG
   .filter((t) => !t.serverSide && !SERVER_PROCESS_ONLY.includes(t.name) && !PENDING_IN_EXTENSION.includes(t.name))

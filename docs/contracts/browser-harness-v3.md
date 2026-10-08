@@ -12,6 +12,6 @@ commit recorded in `vendor/protocol/provenance.json`. No second copy of any sche
 - `browser_fill_secret` is handled by the server (it sends `browser_type`); the extension has no handler for it and never
   stores what `browser_type` typed (the activity history keeps no payload, covered by a test).
 - `browser_passkey` is catalogued behind the `passkey` capability. This extension does **not** offer it yet (the ceremony
-  needs the WebAuthn guard, PR 4, which is being split), so a server answers `capability_unavailable` and nothing reaches
+  needs the WebAuthn guard, tracked in INFRA-374, which is being split), so a server answers `capability_unavailable` and nothing reaches
   the browser. `tests/handler-parity.test.ts` lists it as pending and fails the day the handler appears without the list
   being updated.
