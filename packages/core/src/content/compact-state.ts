@@ -13,6 +13,13 @@ const INTERACTIVE_SELECTOR = [
   '[contenteditable="true"]', '[onclick]', '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/** True for fields whose value is a secret: never emit it into the transcript (SC-2601). */
+export function isSecretInput(type: string, autocomplete: string): boolean {
+  if (type.toLowerCase() === 'password') return true;
+  const ac = autocomplete.toLowerCase();
+  return ac === 'current-password' || ac === 'new-password';
+}
+
 export interface CompactElement {
   i: number;
   tag: string;
@@ -47,15 +54,18 @@ export function generateCompactState(max = 150): CompactState {
     }
 
     const anyEl = el as HTMLElement & { value?: string; htmlFor?: string; disabled?: boolean; type?: string };
+    const inputType = anyEl.type || el.getAttribute('type') || '';
+    const secret = isSecretInput(inputType, el.getAttribute('autocomplete') || '');
     let name = (
       el.getAttribute('aria-label') ||
       anyEl.innerText ||
       el.getAttribute('placeholder') ||
       el.getAttribute('title') ||
       el.getAttribute('alt') ||
-      anyEl.value ||
+      (secret ? '' : anyEl.value) ||
       ''
     ).toString();
+    if (secret && !name.trim()) name = '••••';
 
     if (!name.trim() && anyEl.htmlFor) {
       const label = document.querySelector(`label[for="${CSS.escape(anyEl.htmlFor)}"]`);
@@ -66,7 +76,7 @@ export function generateCompactState(max = 150): CompactState {
     els.push({
       i,
       tag: el.tagName.toLowerCase(),
-      type: (anyEl.type || el.getAttribute('type') || '').slice(0, 12),
+      type: inputType.slice(0, 12),
       name: name.trim().replace(/\s+/g, ' ').slice(0, 60),
       href: (el.getAttribute('href') || '').slice(0, 70),
       disabled: !!(anyEl.disabled || el.getAttribute('aria-disabled') === 'true'),
