@@ -23,6 +23,10 @@ const mockChrome = {
       addListener: vi.fn(),
       removeListener: vi.fn(),
     },
+    onRemoved: {
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+    },
   },
   debugger: {
     getTargets: vi.fn(),
@@ -320,6 +324,159 @@ describe('TabManager CDP readiness', () => {
 describe('TabManager background-tab control', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('waitForTabLoad resolves, times out with cleanup, and rejects when the tab closes', async () => {
+    // Review 5394880058 P1: the old wait never resolved if the load event was missed,
+    // and left its onUpdated listener retained forever on every non-complete exit.
+    vi.useFakeTimers();
+    try {
+      const manager = new TabManager();
+      mockChrome.tabs.onUpdated.addListener.mockClear();
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.addListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+
+      // 1) timeout path: no completion, no close -> bounded rejection, all listeners gone.
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+      const hanging = manager.waitForTabLoad(55, 1000);
+      const assertion = expect(hanging).rejects.toThrow('Timed out after 1000ms waiting for tab 55 to load');
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion;
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+
+      // 2) close path: tab removed while waiting -> rejection with both listeners cleaned.
+      mockChrome.tabs.onUpdated.addListener.mockClear();
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.addListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+      const closing = manager.waitForTabLoad(55, 1000);
+      const closeAssertion = expect(closing).rejects.toThrow('Tab 55 was closed while waiting for it to load');
+      const removedListener = mockChrome.tabs.onRemoved.addListener.mock.calls[0][0];
+      removedListener(55);
+      await closeAssertion;
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+
+      // 3) success path: completion event resolves and cleans up.
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+      mockChrome.tabs.onUpdated.addListener.mockClear();
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.addListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+      const ok = manager.waitForTabLoad(55, 1000);
+      const updatedListener = mockChrome.tabs.onUpdated.addListener.mock.calls[0][0];
+      updatedListener(55, { status: 'complete' });
+      await expect(ok).resolves.toBeUndefined();
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitForTabLoad resolves a tab that already completed, without waiting for a new event', async () => {
+    // Review 5395548320 P1: create/adopt must NOT kill a healthy tab whose load finished
+    // before we subscribed. The state-aware wait resolves from the current 'complete' status.
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'complete' });
+
+    await expect(manager.waitForTabLoad(55, 1000)).resolves.toBeUndefined();
+    expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+    expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('waitForNextTabLoad ignores a previous complete, resolves on the next one, and cancels on trigger failure', async () => {
+    // Review 5395548320 P1: navigation waits must not resolve from a PREVIOUS load's state,
+    // and a failed trigger must not leave the armed wait hanging.
+    vi.useFakeTimers();
+    try {
+      const manager = new TabManager();
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'complete' }); // already loaded
+
+      // 1) armed wait does not resolve from the previous complete...
+      const trigger = vi.fn(async () => { mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' }); });
+      const next = manager.waitForNextTabLoad(55, trigger, 1000);
+      await Promise.resolve(); // let the trigger settle
+      let settled = false;
+      void next.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(settled).toBe(false);
+      // ...but the completion that follows the trigger does.
+      const updatedListener = mockChrome.tabs.onUpdated.addListener.mock.calls.at(-1)![0];
+      updatedListener(55, { status: 'complete' });
+      await expect(next).resolves.toBeUndefined();
+
+      // 2) trigger rejects -> the armed wait is cancelled with the trigger error, listeners gone.
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+      const failing = manager.waitForNextTabLoad(55, () => Promise.reject(new Error('nav blocked')), 1000);
+      await expect(failing).rejects.toThrow('nav blocked');
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitForNextTabLoad ends on timeout even when the trigger never settles, with listeners cleaned', async () => {
+    // Review 5396251544 P1: awaiting the trigger BEFORE observing the wait left the outer
+    // operation pending forever when the trigger was deferred — the inner reject cleaned up
+    // but nothing terminated the caller. Both lifecycles must be observed from the start.
+    vi.useFakeTimers();
+    try {
+      const manager = new TabManager();
+      mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+      mockChrome.tabs.onUpdated.removeListener.mockClear();
+      mockChrome.tabs.onRemoved.removeListener.mockClear();
+
+      const deferred = new Promise<void>(() => undefined); // trigger that never settles
+      const outer = manager.waitForNextTabLoad(55, () => deferred, 1000);
+      const assertion = expect(outer).rejects.toThrow('Timed out after 1000ms waiting for tab 55 to load');
+      await vi.advanceTimersByTimeAsync(1000);
+      await assertion; // the OUTER operation terminates, not just the inner wait
+      expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+      expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waitForNextTabLoad preserves the identity of the trigger error and rejects the wait on cancel', async () => {
+    // Review 5396251544 P2: cancel threw synchronously after cleanup (promise pending forever)
+    // and masked the original error behind 'Navigation trigger failed'. The cancel must REJECT
+    // the wait promise with the ORIGINAL error object — same identity, no wrapper.
+    const manager = new TabManager();
+    mockChrome.tabs.get.mockResolvedValue({ id: 55, status: 'loading' });
+    const original = new Error('nav blocked by policy');
+
+    const failing = manager.waitForNextTabLoad(55, () => Promise.reject(original), 1000);
+    await expect(failing).rejects.toBe(original); // identity, not message equality
+    expect(mockChrome.tabs.onUpdated.removeListener).toHaveBeenCalledTimes(1);
+    expect(mockChrome.tabs.onRemoved.removeListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('createTab removes its own tab and reports the original error when the load wait fails', async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new TabManager();
+      mockChrome.tabs.create.mockResolvedValue({ id: 60, url: 'https://slow.example', active: false });
+      mockChrome.tabs.get.mockImplementation(() => new Promise(() => {})); // never completes
+      mockChrome.tabs.remove.mockClear().mockResolvedValue(undefined);
+
+      const created = manager.createTab('https://slow.example', true, false);
+      const assertion = expect(created).rejects.toThrow('Timed out');
+      await vi.advanceTimersByTimeAsync(30000);
+      await assertion;
+
+      // Cleanup: our own tab is removed and no session is left pointing at it.
+      expect(mockChrome.tabs.remove).toHaveBeenCalledWith(60);
+      expect(manager.getConnectedTabId()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('createTab opens in the background by default', async () => {
