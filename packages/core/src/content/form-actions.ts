@@ -113,3 +113,64 @@ export async function handleFillField(payload: {
   }
   return { kind };
 }
+
+/** Length of an editable field's value — never the value: it may be a secret. */
+export async function handleFieldLength(payload: { selector: string }): Promise<{ length: number }> {
+  const el = await findElement(payload.selector);
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return { length: [...el.value].length };
+  if (el instanceof HTMLElement && el.isContentEditable) return { length: [...(el.textContent ?? '')].length };
+  return { length: 0 };
+}
+
+/** Length-only existence probe for a field (browser_fill_secret verification): never the value. */
+export async function handleGetFieldLength(payload: { selector: string }): Promise<{ exists: boolean; length?: number }> {
+  const el = document.querySelector(payload.selector);
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return { exists: false };
+  return { exists: true, length: el.value.length };
+}
+
+/**
+ * Empty an editable field from inside the page: setNativeValue (the native setter, so a
+ * framework's own setter does not swallow it, plus the input/change events it listens to).
+ */
+export async function handleClearField(payload: { selector: string }): Promise<{ length: number }> {
+  const el = await findElement(payload.selector);
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    setNativeValue(el, '');
+    return { length: el.value.length };
+  }
+  if (el instanceof HTMLElement && el.isContentEditable) {
+    el.textContent = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return { length: 0 };
+  }
+  return { length: 0 };
+}
+
+/**
+ * Last resort of browser_type when the keys CDP sent did not land (the field holds another number
+ * of characters than it should): set `kept` leading characters of the current value + `text`
+ * through the native setter, with the input/change events a framework listens to. Answers with
+ * lengths only: `text` may be a secret. Refuses (applied:false) when the field has a maxlength the
+ * result would exceed, or when it is not an editable field: it never guesses around a mask.
+ */
+export async function handleSetFieldText(payload: {
+  selector: string;
+  text: string;
+  kept: number;
+}): Promise<{ applied: boolean; length: number }> {
+  const el = await findElement(payload.selector);
+  const keep = (value: string) => [...value].slice(0, payload.kept).join('');
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const next = keep(el.value) + payload.text;
+    if (el.maxLength >= 0 && [...next].length > el.maxLength) return { applied: false, length: [...el.value].length };
+    setNativeValue(el, next);
+    return { applied: true, length: [...el.value].length };
+  }
+  if (el instanceof HTMLElement && el.isContentEditable) {
+    el.textContent = keep(el.textContent ?? '') + payload.text;
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true }));
+    return { applied: true, length: [...(el.textContent ?? '')].length };
+  }
+  return { applied: false, length: 0 };
+}

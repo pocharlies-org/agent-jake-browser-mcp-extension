@@ -16,12 +16,13 @@ export const schemas = {
   }),
 
   browser_type: z.object({
-    ref: z.string(),
+    ref: z.string().optional(),
+    selector: z.string().optional(),
     text: z.string(),
     clear: z.boolean().optional().default(false),
     // A password or 2FA code: typed like any text, but never echoed back in the result.
     secret: z.boolean().optional(),
-  }),
+  }).refine((d) => d.ref || d.selector, { message: 'Either ref or selector must be provided' }),
 
   browser_hover: z.object({
     ref: z.string(),
