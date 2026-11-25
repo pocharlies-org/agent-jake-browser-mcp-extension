@@ -41,6 +41,10 @@ const mockChrome = {
   scripting: {
     executeScript: vi.fn().mockResolvedValue([]),
   },
+  windows: {
+    getAll: vi.fn().mockResolvedValue([{ id: 1, focused: true }]),
+    create: vi.fn(),
+  },
 };
 
 (globalThis as { chrome?: unknown }).chrome = mockChrome as unknown;
@@ -329,9 +333,29 @@ describe('TabManager background-tab control', () => {
     await manager.createTab('https://example.com', false);
 
     expect(mockChrome.tabs.create).toHaveBeenCalledWith({
+      windowId: 1,
       url: 'https://example.com',
       active: false,
     });
+  });
+
+  it('createTab creates the window when Chrome has none (headless --no-startup-window)', async () => {
+    const manager = new TabManager();
+    mockChrome.windows.getAll.mockResolvedValueOnce([]);
+    mockChrome.windows.create.mockResolvedValueOnce({
+      id: 42,
+      tabs: [{ id: 43, url: 'https://example.com', title: '', active: true }],
+    });
+
+    const info = await manager.createTab('https://example.com', false);
+
+    expect(mockChrome.tabs.create).not.toHaveBeenCalled();
+    expect(mockChrome.windows.create).toHaveBeenCalledWith({
+      url: 'https://example.com',
+      focused: false,
+      state: 'normal',
+    });
+    expect(info.id).toBe(43);
   });
 
   it('createTab activates the tab only when asked', async () => {
@@ -341,6 +365,7 @@ describe('TabManager background-tab control', () => {
     await manager.createTab('https://example.com', false, true);
 
     expect(mockChrome.tabs.create).toHaveBeenCalledWith({
+      windowId: 1,
       url: 'https://example.com',
       active: true,
     });

@@ -557,7 +557,7 @@ export class TabManager {
    * view. Pass `active: true` only when the user is meant to see it.
    */
   async createTab(url: string, connect = true, active = false): Promise<TabInfo> {
-    const tab = await chrome.tabs.create({ url, active });
+    const tab = await this.createTabInWindow(url, active);
 
     if (connect && tab.id) {
       // Wait for tab to finish loading
@@ -572,6 +572,26 @@ export class TabManager {
       active: tab.active,
       connected: connect && tab.id === this.connectedTabId,
     };
+  }
+
+  /**
+   * Put the tab in an existing normal window (preferring the focused one). Not passing
+   * `windowId` to `chrome.tabs.create` leaves Chrome choosing the "current window", but
+   * the headless Chrome of the pods starts with `--no-startup-window`: with zero windows
+   * the call fails («No current window») and nothing can open a page. Then the extension
+   * creates its own window, unfocused, the only way `chrome.windows` allows.
+   */
+  private async createTabInWindow(url: string, active: boolean): Promise<chrome.tabs.Tab> {
+    const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+    const window = windows.find((w) => w.focused) ?? windows[0];
+    if (window?.id) {
+      return chrome.tabs.create({ windowId: window.id, url, active });
+    }
+    const created = await chrome.windows.create({ url, focused: false, state: 'normal' });
+    if (!created?.id || !created.tabs?.[0]?.id) {
+      throw new Error('Chrome devolvió la ventana/pestaña del agente vacía');
+    }
+    return created.tabs[0];
   }
 
   /**
