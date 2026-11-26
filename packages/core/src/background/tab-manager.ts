@@ -181,6 +181,11 @@ export class TabManager {
     }
   }
 
+  /** Whether this browser still has the tab. The server's per-session routing asks before connecting (INFRA-1606). */
+  async hasTab(tabId: number): Promise<boolean> {
+    return this.tabExists(tabId);
+  }
+
   /**
    * Check if debugger is actually attached to a tab.
    * Uses chrome.debugger.getTargets() for accurate state.
