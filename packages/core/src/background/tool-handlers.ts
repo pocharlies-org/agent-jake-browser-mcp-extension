@@ -64,6 +64,31 @@ export function createHandlerMap(ctx: HandlerContext): HandlerMap {
 }
 
 /**
+ * The MCP server names the calling session's tab in every command (`targetTabId`). Take it out of
+ * the payload and connect to it first, so no handler picks a tab itself — which is what let one
+ * session act on another's (INFRA-1606). A tab that is gone answers TAB_GONE without connecting:
+ * connectTab drops the tab (and debugger) another session is using, so it must not be called for
+ * a tab that no longer exists.
+ */
+export async function routeToTargetTab(
+  tabManager: Pick<TabManager, 'connectTab' | 'hasTab'>,
+  payload: unknown,
+): Promise<{ tabId: number | null; payload: unknown }> {
+  if (!payload || typeof payload !== 'object') return { tabId: null, payload };
+  const { targetTabId, ...rest } = payload as Record<string, unknown>;
+  if (typeof targetTabId !== 'number') return { tabId: null, payload };
+  if (!await tabManager.hasTab(targetTabId)) {
+    const gone = new Error(
+      `TAB_GONE: tab ${targetTabId} of this session no longer exists; open one with browser_new_tab or pick one with browser_switch_tab`,
+    );
+    gone.name = 'TAB_GONE';
+    throw gone;
+  }
+  await tabManager.connectTab(targetTabId);
+  return { tabId: targetTabId, payload: rest };
+}
+
+/**
  * Create tool handlers bound to a tab manager.
  */
 export function createToolHandlers(tabManager: TabManager) {
@@ -94,7 +119,8 @@ export function createToolHandlers(tabManager: TabManager) {
         };
       }
 
-      const result = await handler(payload);
+      const { payload: routedPayload } = await routeToTargetTab(tabManager, payload);
+      const result = await handler(routedPayload);
       const durationMs = Math.round(performance.now() - startTime);
 
       const description = getToolDescription(type, payload, result);
