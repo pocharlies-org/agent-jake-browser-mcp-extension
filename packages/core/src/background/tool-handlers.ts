@@ -66,17 +66,26 @@ export function createHandlerMap(ctx: HandlerContext): HandlerMap {
 /**
  * The MCP server names the calling session's tab in every command (`targetTabId`). Take it out of
  * the payload and connect to it first, so no handler picks a tab itself — which is what let one
- * session act on another's (INFRA-1606). A tab that is gone answers TAB_GONE without connecting:
- * connectTab drops the tab (and debugger) another session is using, so it must not be called for
- * a tab that no longer exists.
+ * session act on another's (INFRA-1606). A target that is not a positive integer is rejected as
+ * INVALID_TARGET_TAB_ID before any tab lookup. A tab that is gone answers TAB_GONE without
+ * connecting: connectTab drops the tab (and debugger) another session is using, so it must not be
+ * called for a tab that no longer exists. And when the manager is already on this tab the connect
+ * is skipped — reconnecting would reset the page-event history of a session that is not moving.
  */
 export async function routeToTargetTab(
-  tabManager: Pick<TabManager, 'connectTab' | 'hasTab'>,
+  tabManager: Pick<TabManager, 'connectTab' | 'hasTab' | 'getConnectedTabId'>,
   payload: unknown,
 ): Promise<{ tabId: number | null; payload: unknown }> {
   if (!payload || typeof payload !== 'object') return { tabId: null, payload };
   const { targetTabId, ...rest } = payload as Record<string, unknown>;
-  if (typeof targetTabId !== 'number') return { tabId: null, payload };
+  if (targetTabId === undefined) return { tabId: null, payload };
+  if (typeof targetTabId !== 'number' || !Number.isSafeInteger(targetTabId) || targetTabId <= 0) {
+    const invalid = new Error(
+      `INVALID_TARGET_TAB_ID: targetTabId must be a positive integer, got ${typeof targetTabId === 'number' ? String(targetTabId) : JSON.stringify(targetTabId)}`,
+    );
+    invalid.name = 'INVALID_TARGET_TAB_ID';
+    throw invalid;
+  }
   if (!await tabManager.hasTab(targetTabId)) {
     const gone = new Error(
       `TAB_GONE: tab ${targetTabId} of this session no longer exists; open one with browser_new_tab or pick one with browser_switch_tab`,
@@ -84,7 +93,7 @@ export async function routeToTargetTab(
     gone.name = 'TAB_GONE';
     throw gone;
   }
-  await tabManager.connectTab(targetTabId);
+  if (tabManager.getConnectedTabId() !== targetTabId) await tabManager.connectTab(targetTabId);
   return { tabId: targetTabId, payload: rest };
 }
 
